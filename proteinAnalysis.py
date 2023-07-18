@@ -219,7 +219,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean CA RMSD')
-        plt.savefig(str(out_dir / 'byres_mean_ca_rmsd.png'))
+        plt.savefig(str(self.out_dir / 'byres_mean_ca_rmsd.png'))
         f2 = plt.figure()
         plt.plot(self.resids, self.byres_bb_rmsd_avg, 'b-')
         plt.errorbar(self.resids, self.byres_bb_rmsd_avg, self.byres_bb_rmsd_std, ecolor='gray')
@@ -228,7 +228,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean BB RMSD')
-        plt.savefig(str(out_dir / 'byres_mean_bb_rmsd.png'))
+        plt.savefig(str(self.out_dir / 'byres_mean_bb_rmsd.png'))
         f3 = plt.figure()
         plt.plot(self.resids, self.byres_sc_rmsd_avg, 'b-')
         plt.errorbar(self.resids, self.byres_sc_rmsd_avg, self.byres_sc_rmsd_std, ecolor='gray')
@@ -237,7 +237,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean SC RMSD')
-        plt.savefig(str(out_dir / 'byres_mean_sc_rmsd.png'))
+        plt.savefig(str(self.out_dir / 'byres_mean_sc_rmsd.png'))
         f4 = plt.figure()
         plt.plot(self.resids, self.byres_ca_rmsd_avg, 'b-')
         plt.errorbar(self.resids, self.byres_ha_rmsd_avg, self.byres_ha_rmsd_std, ecolor='gray')
@@ -246,7 +246,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean HA RMSD')
-        plt.savefig(str(out_dir / 'byres_mean_ha_rmsd.png'))
+        plt.savefig(str(self.out_dir / 'byres_mean_ha_rmsd.png'))
         df = pd.DataFrame()
         df['resid'] = self.resids
         df['resname'] = self.resnames
@@ -266,7 +266,7 @@ class proteinAnalysis:
         df['Std HA RMSD'] = self.byres_ha_rmsd_std
         df['First half Std HA RMSD'] = self.byres_ha_rmsd_std1
         df['Second half Std HA RMSD'] = self.byres_ha_rmsd_std2
-        df.to_csv(str(out_dir / 'Byres_rsmd.csv'), index=False)
+        df.to_csv(str(self.out_dir / 'Byres_rsmd.csv'), index=False)
         
     def plotByResDih(self):
         '''
@@ -325,7 +325,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean BB Dihedral')
-        plt.savefig(str(out_dir / 'mean_bb_dihedral.png'))
+        plt.savefig(str(self.out_dir / 'mean_bb_dihedral.png'))
         f2 = plt.figure()
         plt.plot(self.resids, self.byres_sc_dih_avg, 'b-')
         plt.errorbar(self.resids, self.byres_sc_dih_avg, self.byres_sc_dih_std, ecolor='gray')
@@ -334,7 +334,7 @@ class proteinAnalysis:
         plt.xticks(np.arange(0, len(self.resids)+1, 10))
         plt.xticks(fontsize=5)
         plt.ylabel('Mean SC Dihedral')
-        plt.savefig(str(out_dir / 'mean_sc_dihedral.png'))
+        plt.savefig(str(self.out_dir / 'mean_sc_dihedral.png'))
         df = pd.DataFrame()
         df['resid'] = self.resids
         df['resname'] = self.resnames
