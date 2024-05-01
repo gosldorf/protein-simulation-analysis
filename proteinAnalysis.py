@@ -8,6 +8,11 @@ import pandas as pd #handling data in dataframes
 import pytraj as pt #cpptraj, but python
 from pymol import cmd,stored #pymol commands and stuffs
 import scipy.stats as stats #for stats.entropy
+import seaborn as sns #heatmap, plotting functions
+from tqdm import tqdm #progress bars
+from sklearn.preprocessing import minmax_scale #scale statistics to (0,1)
+from sklearn import preprocessing as p #scale 2d stats to a normalized range [0,1]
+min_max_scaler = p.MinMaxScaler() #initialize 2d scaler for later
 #############################Import Block#############################
 
 
@@ -21,6 +26,7 @@ class proteinAnalysis:
     ligresn = []
     ligresi = []
     bb_rmsd = []
+    lig_rmsd = []
     ha_rmsd = []
     sc_rmsd = []
     ca_rmsd = []
@@ -54,6 +60,16 @@ class proteinAnalysis:
     byres_sc_dih_std = []
     byres_sc_dih_std1 = []
     byres_sc_dih_std2 = []
+    byres_bb_pos = [] # backbone byresidue position (center of geometry)
+    byres_sc_pos = [] # sidechain byresidue position (center of geometry)
+    byres_bb_avgpos = [] #backbone byresidue average position (center of geometry)
+    byres_sc_avgpos = [] # sidechain byresidue average position (center of geometry)
+    byres_bb_dev = [] #backbone byresidue position deviation from average
+    byres_sc_dev = [] #sidechain byresidue position deviation from average
+    byres_bb_corrmatrix = [] #backbone correlation matrix
+    byres_sc_corrmatrix = [] #sidechain correlation matrix
+    byres_bb_variation = [] #variation in byresidue deviations from mean, backbone
+    byres_sc_variation = [] #variation in byresidue deviations from mean, sidechain
     trajectory = None
     ref = None
     out_dir = None
@@ -93,15 +109,20 @@ class proteinAnalysis:
         self.ref = pt.load(refPdb)
         self.out_dir = outDir
         self.timestep = timestep
-    def loadTrajectory(self, traj, top, align=None):
+    def loadTrajectory(self, traj, top, align=None, skip_interval=None):
         '''
         Method to load trajectory and align as needed, maybe should be in init
         
         align is a string that defines by how the structure should be aligned
+
+        skip_interval is the stride over the trajectory if provided. If none skip, else stride by that number
         
         eg '@CA' for alpha carbons
         '''
-        self.trajectory = pt.load(traj, top)
+        if skip_interval == None:
+            self.trajectory = pt.load(traj, top)
+        else:
+            self.trajectory = pt.load(traj, top, stride=skip_interval)
         if align is not None:
             self.trajectory = pt.align(self.trajectory, align, self.ref)
 
@@ -146,24 +167,28 @@ class proteinAnalysis:
         df['SC RMSD (Å)'] = self.sc_rmsd
         df['HA RMSD (Å)'] = self.ha_rmsd
         df.to_csv(str(self.out_dir / 'proteinRMSD.csv'), index=False)
+        del df
         return
         
     def plotLigandRMSD(self):
         '''
         Method to generate ligand rmsd (provided there is a ligand)
         '''
-        if len(ligresn) == 0:
+        if len(self.ligresn) == 0:
             print('No ligand in system check initialization')
             return
         df = pd.DataFrame()
-        lig_rms = pt.rmsd_nofit(self.trajectory, mask=f':{self.ligresn[0]}')
-        plt.plot(self.time, lig_rms, 'b-')
+        lig_rms = pt.rmsd_nofit(self.trajectory, mask=f':{self.ligresi[0]}&!@H=')
+        self.lig_rmsd = np.array(lig_rms)
+        f1 = plt.figure()
+        plt.plot(self.time, self.lig_rmsd, 'b-')
         plt.xlabel('time (ps)')
         plt.ylabel('ligand rmsd (Å)')
         plt.savefig(str(self.out_dir / 'ligand_rmsd.png'))
         df['simtime'] = self.time
-        df['ligand RMSD (Å)'] = lig_rms
+        df['ligand RMSD (Å)'] = self.lig_rmsd
         df.to_csv(str(self.out_dir / 'ligandRMSD.csv'), index=False)
+        del df
         return
     
     def plotByResRMSD(self):
@@ -239,7 +264,7 @@ class proteinAnalysis:
         plt.ylabel('Mean SC RMSD')
         plt.savefig(str(self.out_dir / 'byres_mean_sc_rmsd.png'))
         f4 = plt.figure()
-        plt.plot(self.resids, self.byres_ca_rmsd_avg, 'b-')
+        plt.plot(self.resids, self.byres_ha_rmsd_avg, 'b-')
         plt.errorbar(self.resids, self.byres_ha_rmsd_avg, self.byres_ha_rmsd_std, ecolor='gray')
         plt.xlabel('residue number')
         plt.xticks(rotation=45)
@@ -267,6 +292,8 @@ class proteinAnalysis:
         df['First half Std HA RMSD'] = self.byres_ha_rmsd_std1
         df['Second half Std HA RMSD'] = self.byres_ha_rmsd_std2
         df.to_csv(str(self.out_dir / 'Byres_rsmd.csv'), index=False)
+        del df
+        return
         
     def plotByResDih(self):
         '''
@@ -347,3 +374,175 @@ class proteinAnalysis:
         df['First half std SC dihedral'] = self.byres_sc_dih_std1
         df['Second half std SC dihedral'] = self.byres_sc_dih_std2
         df.to_csv(str(self.out_dir / 'byres_dihedrals.csv'), index=False)
+        del df
+        return
+
+    def correlatedMotions(self):
+        '''
+            Function to call to calculate the correlated motions matrix of each residue
+
+            This will be a matrix that contains the information:
+                C_ij = < dr_i * dr_j > / (<dr_i ^2 < dr_j^2 >) ^ (1/2)
+
+                Where dr_i is the change in position for the ith element relative to its mean sampled position:
+                dr_i = <r_i> - r_i
+
+                all the values in the final C_ij calculation should be averages
+
+
+                So firstly we need mean positions...
+
+                We will want mean positions of backbones and mean positions of sidechains separately handled
+
+                Should output both a summary of each residues deviations and also the correlation matrix                
+        '''
+
+        for k,res in enumerate(self.resids):
+            bb = pt.center_of_geometry(self.trajectory, mask=f':{res}&@CA,C,N,O&!:HOH,WAT')
+            sc = pt.center_of_geometry(self.trajectory, mask=f':{res}&!@CA,C,N,O&!:HOH,WAT')
+            bb_avg = np.array(bb)
+            sc_avg = np.array(sc)
+            self.byres_bb_pos.append(bb_avg)
+            self.byres_sc_pos.append(sc_avg)
+        self.byres_bb_pos = np.array(self.byres_bb_pos)
+        self.byres_sc_pos = np.array(self.byres_sc_pos)
+        for k,res in enumerate(self.byres_bb_pos): # loop through each residue
+            bb_x_mean = np.mean(res[:][0])
+            bb_y_mean = np.mean(res[:][1])
+            bb_z_mean = np.mean(res[:][2])
+            sc_x_mean = np.mean(self.byres_sc_pos[:][0])
+            sc_y_mean = np.mean(self.byres_sc_pos[:][1])
+            sc_z_mean = np.mean(self.byres_sc_pos[:][2])
+            temp_bb = np.array([bb_x_mean, bb_y_mean, bb_z_mean])
+            temp_sc = np.array([sc_x_mean, sc_y_mean, sc_z_mean])
+            self.byres_bb_avgpos.append(temp_bb)
+            self.byres_sc_avgpos.append(temp_sc)
+        self.byres_bb_avgpos = np.array(self.byres_bb_avgpos)
+        self.byres_sc_avgpos = np.array(self.byres_sc_avgpos)
+        
+        #byres_bb_dev
+        for k,res in enumerate(self.byres_bb_pos): #loop through each residue
+            temp_bb = [] #storage for deviation backbone
+            temp_sc = [] #storage for deviation sidechains
+            for j,frame in enumerate(res): #loop through each frame
+                diff_bb = []
+                diff_sc = []
+                diff_bb.append(self.byres_bb_avgpos[k][0] - frame[0])
+                diff_bb.append(self.byres_bb_avgpos[k][1] - frame[1])
+                diff_bb.append(self.byres_bb_avgpos[k][2] - frame[2])
+                diff_sc.append(self.byres_sc_avgpos[k][0] - self.byres_sc_pos[k][j][0])
+                diff_sc.append(self.byres_sc_avgpos[k][1] - self.byres_sc_pos[k][j][1])
+                diff_sc.append(self.byres_sc_avgpos[k][2] - self.byres_sc_pos[k][j][2])
+                diff_bb = np.array(diff_bb)
+                diff_sc = np.array(diff_sc)
+                temp_bb.append(diff_bb)
+                temp_sc.append(diff_sc)
+            temp_bb = np.array(temp_bb)
+            temp_sc = np.array(temp_sc)
+            self.byres_bb_dev.append(temp_bb)
+            self.byres_sc_dev.append(temp_sc)
+        self.byres_bb_dev = np.array(self.byres_bb_dev)
+        self.byres_sc_dev = np.array(self.byres_sc_dev)
+        #################################Memory clear block#################################
+        ##at this point we no longer need the positions...we should delete them, we need the memory
+        self.byres_bb_pos = np.zeros(1)
+        self.byres_sc_pos = np.zeros(1)
+        self.byres_bb_avgpos = np.zeros(1)
+        self.byres_sc_avgpos = np.zeros(1)
+        #################################Memory clear block#################################
+        ## mean(dr_i * dr_j) / sqrt(mean(dr_i^2)*mean(dr_j^2))
+        mean_bb_dri2 = []
+        #mean_bb_dri = []
+        mean_sc_dri2 = []
+        #mean_sc_dri = []
+        for k,res in enumerate(self.byres_bb_dev):
+            temp_dri2 = []
+            temp_dri2.append(np.mean(res[:][0])*np.mean(res[:][0]))
+            temp_dri2.append(np.mean(res[:][1])*np.mean(res[:][1]))
+            temp_dri2.append(np.mean(res[:][2])*np.mean(res[:][2]))
+            mean_bb_dri2.append(temp_dri2)
+            # temp_dri2 = []
+            # temp_dri2.append(np.mean(res[:][0]))
+            # temp_dri2.append(np.mean(res[:][1]))
+            # temp_dri2.append(np.mean(res[:][2]))
+            # mean_bb_dri.append(temp_dri2)
+            temp_dri2 = []
+            temp_dri2.append(np.mean(self.byres_sc_dev[k][:][0])*np.mean(self.byres_sc_dev[k][:][0]))
+            temp_dri2.append(np.mean(self.byres_sc_dev[k][:][1])*np.mean(self.byres_sc_dev[k][:][1]))
+            temp_dri2.append(np.mean(self.byres_sc_dev[k][:][2])*np.mean(self.byres_sc_dev[k][:][2]))
+            mean_sc_dri2.append(temp_dri2)
+            # temp_dri2 = []
+            # temp_dri2.append(np.mean(self.byres_sc_dev[k][:][0]))
+            # temp_dri2.append(np.mean(self.byres_sc_dev[k][:][1]))
+            # temp_dri2.append(np.mean(self.byres_sc_dev[k][:][2]))
+            # mean_sc_dri.append(temp_dri2)
+        mean_bb_dri2 = np.array(mean_bb_dri2)
+        mean_sc_dri2 = np.array(mean_sc_dri2)
+        #define these now to make sure we have the memory :D
+        self.byres_bb_corrmatrix = np.zeros([int(self.byres_bb_dev.shape[0]), int(self.byres_bb_dev.shape[0])])
+        self.byres_sc_corrmatrix = np.zeros([int(self.byres_sc_dev.shape[0]), int(self.byres_sc_dev.shape[0])])
+        for k in tqdm(range(self.byres_bb_dev.shape[0])):
+            for j,res2 in enumerate(self.byres_bb_dev):
+                if k==j:
+                    continue
+                bb_frame = []
+                sc_frame = []
+                for l, frame in enumerate(self.byres_bb_dev[0]):
+                    bb_frame.append(np.dot(self.byres_bb_dev[k][l], self.byres_bb_dev[j][l]))
+                    sc_frame.append(np.dot(self.byres_sc_dev[k][l], self.byres_sc_dev[j][l]))
+                self.byres_bb_corrmatrix[k][j] = np.absolute(np.mean(bb_frame) / (np.sqrt(np.dot(mean_bb_dri2[k], mean_bb_dri2[j]))))
+                self.byres_sc_corrmatrix[k][j] = np.absolute(np.mean(sc_frame) / (np.sqrt(np.dot(mean_sc_dri2[k], mean_sc_dri2[j]))))
+        self.byres_bb_variation = np.zeros(self.byres_bb_dev.shape[0])
+        self.byres_sc_variation = np.zeros(self.byres_sc_dev.shape[0])
+        for k,var in enumerate(self.byres_bb_variation):
+            self.byres_bb_variation[k] = np.std(self.byres_bb_dev[k])
+            self.byres_sc_variation[k] = np.std(self.byres_sc_dev[k])
+        self.byres_bb_dev = np.zeros(1)
+        self.byres_sc_dev = np.zeros(1)
+        del mean_bb_dri2
+        del mean_sc_dri2
+        #rescale variation and corrmatrices to 0,1 -- this way the visualizations are more intuitive
+        self.byres_bb_corrmatrix = min_max_scaler.fit_transform(self.byres_bb_corrmatrix)
+        self.byres_sc_corrmatrix = min_max_scaler.fit_transform(self.byres_sc_corrmatrix)
+        variation = minmax_scale(self.byres_bb_variation, feature_range=(0,1))
+        self.byres_bb_variation = minmax_scale(self.byres_bb_variation, feature_range=(0,1))
+        self.byres_sc_variation = minmax_scale(self.byres_sc_variation, feature_range=(0,1))
+        f1 = plt.figure()
+        ax = sns.heatmap(self.byres_bb_corrmatrix, linewidth=0.5, cmap='BuPu')
+        plt.xlabel('residue number')
+        plt.ylabel('residue number')
+        plt.title('Backbone correlated motion heatmap')
+        plt.savefig(str(self.out_dir / 'bb_corrMatrix.png'))
+        f2 = plt.figure()
+        ax = sns.heatmap(self.byres_sc_corrmatrix, linewidth=0.5, cmap='BuPu')
+        plt.xlabel('residue number')
+        plt.ylabel('residue number')
+        plt.title('Side chain correlated motion heatmap')
+        plt.savefig(str(self.out_dir / 'sc_corrMatrix.png'))
+        df = pd.DataFrame(data = self.byres_bb_corrmatrix, index=self.resids, columns=self.resids)
+        df.to_csv(str(self.out_dir / 'bb_corrMatrix.csv'))
+        df = pd.DataFrame(data = self.byres_sc_corrmatrix, index=self.resids, columns=self.resids)
+        df.to_csv(str(self.out_dir / 'sc_corrMatrix.csv'))
+        f3 = plt.figure()
+        plt.plot(self.resids, self.byres_bb_variation, 'b-')
+        plt.xlabel('residue number')
+        plt.xticks(rotation=45)
+        plt.xticks(np.arange(0, len(self.resids)+1, 10))
+        plt.xticks(fontsize=5)
+        plt.ylabel('Residue positional variation')
+        plt.savefig(str(self.out_dir / 'byres_variation_bb.png'))
+        f4 = plt.figure()
+        plt.plot(self.resids, self.byres_sc_variation, 'b-')
+        plt.xlabel('residue number')
+        plt.xticks(rotation=45)
+        plt.xticks(np.arange(0, len(self.resids)+1, 10))
+        plt.xticks(fontsize=5)
+        plt.ylabel('Residue positional variation')
+        plt.savefig(str(self.out_dir / 'byres_variation_sc.png'))
+        df = pd.DataFrame()
+        df['resid'] = self.resids
+        df['resname'] = self.resnames
+        df['BB Positional Variation'] = self.byres_bb_variation
+        df['SC Positional Variation'] = self.byres_sc_variation
+        df.to_csv(str(self.out_dir / 'byres_variations.csv'), index=False)
+        return
